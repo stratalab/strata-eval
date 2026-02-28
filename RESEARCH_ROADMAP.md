@@ -1,138 +1,262 @@
 # Strata Research Roadmap
 
-This document maps the academic research landscape for Strata — potential papers,
-benchmarking methodology, evaluation strategies, and how the body of work compounds
-over time. The goal is to build a rigorous, peer-reviewable foundation that gives
-Strata serious academic credibility and creates a moat that is expensive to replicate.
+This document describes the research program for Strata — not individual papers,
+but a sustained body of work with a shared benchmarking harness, cumulative evidence,
+and a coherent thesis. The goal is a research identity that is expensive to replicate
+and impossible to dismiss as a feature catalog.
 
 ---
 
 ## Table of Contents
 
-1. [Strategic Overview](#strategic-overview)
-2. [What Makes Strata Novel](#what-makes-strata-novel)
-3. [Paper Roadmap](#paper-roadmap)
-   - [Paper 1: Architecture](#paper-1-strata-the-multi-primitive-embedded-database)
-   - [Paper 2: Hybrid Search](#paper-2-typed-hybrid-search-with-position-aware-blending)
-   - [Paper 3: In-Process Inference](#paper-3-inference-embedded-in-the-database)
-   - [Paper 4: RAG Quality](#paper-4-native-rag-with-zero-serialization-overhead)
-   - [Paper 5: Vector Index](#paper-5-segmented-hnsw)
-   - [Paper 6: Graph-Augmented Retrieval](#paper-6-graph-augmented-hybrid-retrieval)
-   - [Paper 7: Recursive Query Execution](#paper-7-recursive-query-execution-over-indexed-primitives)
-   - [Paper 8: Agent-First Database Design](#paper-8-agent-first-database-design)
-   - [Paper 9: Event Projections](#paper-9-event-sourced-multi-primitive-materialization)
-   - [Paper 10: Graph-Validated State Machines](#paper-10-database-native-state-machines-via-graph-ontology)
-   - [Paper 11: Auto-Embedding](#paper-11-auto-embedding-as-a-database-primitive)
-   - [Paper 12: Copy-on-Write Branching](#paper-12-copy-on-write-branching-for-multi-primitive-databases)
-4. [Benchmarking Methodology](#benchmarking-methodology)
+1. [Core Thesis](#core-thesis)
+   - [Why a Database?](#why-a-database)
+   - [What "Speculative Execution" Means](#what-speculative-execution-means)
+2. [What Is Architecturally Novel](#what-is-architecturally-novel)
+   - [The Core Technical Problem](#the-core-technical-problem)
+3. [Research Arcs](#research-arcs)
+   - [Arc A: Database Architecture](#arc-a-database-architecture)
+   - [Arc B: Retrieval Model](#arc-b-retrieval-model-enabled-by-that-architecture)
+   - [Arc C: Co-located Inference](#arc-c-co-located-inference-as-a-systems-primitive)
+   - [Arc D: Databases for Agents](#arc-d-databases-designed-for-agents)
+4. [The Killer Experiment](#the-killer-experiment)
+5. [Benchmarking Methodology](#benchmarking-methodology)
    - [How Research Teams Benchmark](#how-research-teams-benchmark)
    - [Raw Benchmarking](#raw-benchmarking)
    - [Comparative Benchmarking](#comparative-benchmarking)
    - [Statistical Rigor](#statistical-rigor)
-5. [Benchmark Infrastructure](#benchmark-infrastructure)
+6. [Benchmark Infrastructure](#benchmark-infrastructure)
+   - [The Harness as an Independent Contribution](#the-harness-as-an-independent-contribution)
    - [Experiment Configuration](#experiment-configuration)
    - [Results Storage](#results-storage)
    - [Comparison Engine](#comparison-engine)
-6. [Sequencing and Dependencies](#sequencing-and-dependencies)
-7. [References](#references)
+7. [Sequencing and Dependencies](#sequencing-and-dependencies)
+8. [References](#references)
 
 ---
 
-## Strategic Overview
+## Core Thesis
 
-The research strategy is built on compounding returns:
+The research program makes one falsifiable claim:
 
-- **Paper 1** (architecture) forces construction of the benchmarking harness — experiment
-  configs, results store, comparison engine, baseline runners. This is 80% of the
-  infrastructure work.
-- **Papers 2-4** reuse the harness, adding one new benchmark dimension each time
-  (retrieval quality, RAG quality, inference latency). Each takes a fraction of the
-  effort of Paper 1.
-- **Papers 5+** are incremental. By then, every new Strata feature slots into the
-  existing evaluation framework.
+> AI-era workflows — retrieval, inference, mutation, and speculation — are better
+> served by a database where these operations share one transactional and memory
+> reality, enabling branch-scoped experimentation and zero-serialization pipelines
+> that are impractical in polyglot architectures.
 
-The moat is not any single paper. It is the accumulated body of work where each
-result cross-references the last, run on the same harness, against the same baselines,
-with the same rigor. That is what makes it hard to dismiss and expensive to replicate.
+Specifically: compared to a best-effort polyglot stack, Strata reduces end-to-end
+pipeline latency (by eliminating serialization boundaries), reduces engineering
+complexity (by replacing orchestration code with database operations), and uniquely
+enables branch-scoped speculative computation (which has no polyglot equivalent
+that avoids full reindexing).
 
-Every subsequent paper opens with: *"We build on Strata [1], a multi-primitive
-embedded database that..."* If that reference does not exist, every paper has to
-spend two pages explaining what Strata is before it can get to its actual contribution.
-The architecture paper is the foundation.
+This is not an argument that many primitives can coexist. Reviewers will mentally
+reduce that to "DuckDB + FAISS + llama.cpp glued together." The argument is that
+**sharing physical layout, lifecycle, and transactional semantics** enables an
+execution model that is impractical when these capabilities live in separate
+processes.
+
+The strongest expression of that execution model is **branching as a queryable
+execution dimension**, not a storage trick. Git-like copy-on-write branching
+applied to vector indexes, graphs, event materializations, embeddings, and search
+configurations turns the database into a substrate for continuous speculative
+computation. Most databases treat snapshots as durability artifacts. Strata treats
+them as an experimentation substrate — for agent simulation, RAG evaluation, index
+A/B testing, and recursive reasoning sandboxes.
+
+### Why a Database?
+
+A predictable reviewer objection: "This is an application runtime with embedded
+storage, not a database."
+
+The answer: speculative computation is a first-class database workload. It must be
+**durable** (branches survive crashes), **replayable** (event log reconstructs any
+state), **branch-isolated** (concurrent experiments do not interfere), **index-
+consistent** (all indexes reflect the same logical snapshot), and **queryable**
+(branches are addressed and searched like any other data). These are database
+guarantees — durability, concurrency, consistency, indexing, introspection — not
+application-layer concerns.
+
+An agent framework with embedded storage does not provide branch-isolated index
+consistency or cross-primitive transactional atomicity. A database does.
+
+### What "Speculative Execution" Means
+
+We use "speculative execution" in a precise operational sense:
+
+- **Speculative branches** are cheap COW forks of all state and indexes.
+- Branches can be **queried and mutated independently** with snapshot-consistent
+  indexes (BM25, HNSW, property graph all reflect the same logical snapshot).
+- **Merges** reconcile changes under defined conflict rules (last-writer-wins per
+  key, with conflict metadata preserved for application-level resolution).
+- The system exposes **branch lineage metadata** to queries (parent, creation time,
+  delta size, divergence point).
+
+This is not filesystem snapshotting. The hard problem is maintaining index
+consistency across branch boundaries — see [invariants below](#the-core-technical-problem).
+
+Every paper in this program explores a consequence of that shared physical reality.
+The later agent and recursive-reasoning work should feel like inevitable consequences
+of the architecture, not bolted-on features.
+
+**Compressed thesis for Paper 1 abstract:**
+
+> Strata is a database designed for continuous speculative computation. It unifies
+> heterogeneous primitives under a single write-ahead log and MVCC branching model,
+> so retrieval, indexing, inference, and mutation execute in one address space with
+> snapshot-consistent indexes. This enables branch-scoped experimentation and zero-
+> serialization RAG pipelines that are impractical in polyglot stacks, while
+> remaining competitive with embedded baselines on standard microbenchmarks.
 
 ---
 
-## What Makes Strata Novel
+## What Is Architecturally Novel
 
-No other single embedded system has all of the following in one process:
+The novelty is not the primitives. Each has standalone equivalents. The novelty is
+that they share a unified execution and storage model:
 
-| Primitive / Capability | Standalone Equivalent | In Strata |
+| Architectural Property | What It Means | Why It Matters |
 |---|---|---|
-| KV with CAS | Redis, RocksDB | Yes |
-| JSON documents | MongoDB, SQLite JSON | Yes |
-| Append-only hash-chained events | Kafka, EventStoreDB | Yes |
-| State cells with CAS | etcd, Consul | Yes |
-| Property graph with ontology | Neo4j, DGraph | Yes |
-| Dense vectors (Segmented HNSW) | Pinecone, Qdrant, FAISS | Yes |
-| BM25 inverted index | Elasticsearch, Tantivy | Yes |
-| Local LLM inference (llama.cpp) | Ollama, vLLM | Yes |
-| Cloud LLM inference (3 providers) | OpenAI API | Yes |
-| Copy-on-write branching | Git (but for data) | Yes |
-| Auto-embedding on write | Nothing does this natively | Yes |
-| Cross-primitive search | Nothing does this | Yes |
+| One WAL / event log | All primitives (KV, JSON, events, state, graph, vectors) write to the same log | Atomic cross-primitive operations without distributed transactions |
+| One MVCC / branching model | COW branches span all primitives simultaneously | Speculative execution: branch, experiment, discard or merge |
+| Zero serialization boundaries | Search, inference, and mutation share memory | No IPC, no JSON marshaling, no network round-trips between retrieval and generation |
+| Shared memory residency | Vector indexes, inverted indexes, and graph structures co-reside | Cross-primitive search is a pointer chase, not an API call |
+| Unified write-path hooks | Auto-embedding triggers on any primitive write | Write-time indexing without external pipelines |
 
-Each primitive alone is not novel. **The convergence is the contribution.**
-Convergence creates emergent capabilities — cross-primitive search, zero-serialization
-RAG, branched experimentation, auto-embedding — that do not exist when these are
-separate systems.
+Standalone systems that cover individual capabilities:
+
+| Capability | Standalone Equivalents |
+|---|---|
+| KV with CAS | Redis, RocksDB |
+| JSON documents | MongoDB, SQLite JSON |
+| Append-only hash-chained events | Kafka, EventStoreDB |
+| State cells with CAS | etcd, Consul |
+| Property graph with ontology | Neo4j, DGraph |
+| Dense vectors (Segmented HNSW) | Pinecone, Qdrant, FAISS |
+| BM25 inverted index | Elasticsearch, Tantivy |
+| Local LLM inference (llama.cpp) | Ollama, vLLM |
+| Copy-on-write branching | Git (but for data) |
+
+Each primitive alone is well-understood. The contribution is unifying these under
+a single execution and storage model, and demonstrating emergent capabilities —
+cross-primitive search, zero-serialization RAG, branched experimentation,
+write-time auto-embedding — that arise from that unification and do not exist
+when these are separate systems.
+
+### The Core Technical Problem
+
+If a reviewer asks *"What is the single hardest systems problem you solved?"*
+the answer must be one sentence:
+
+> Snapshot-consistent copy-on-write branching across heterogeneous indexes
+> (inverted lists, HNSW graphs, and property graphs) under a unified WAL,
+> without reindexing.
+
+This is the publishable systems meat. Spell out the invariants the system
+guarantees:
+
+1. **Branch snapshot invariant.** All primitives and indexes in branch B reflect
+   the same logical snapshot S(B). A query on branch B never sees a document in
+   the BM25 index that is absent from the HNSW graph, or vice versa.
+
+2. **Cross-primitive atomicity.** A transaction that updates a JSON document and
+   emits an event is either visible everywhere (KV, JSON, BM25, HNSW, event log)
+   or nowhere. There is no window where one index reflects the write and another
+   does not.
+
+3. **Index coherency invariant.** BM25 posting lists and HNSW graph membership
+   correspond to the same set of live documents at every snapshot. Branching does
+   not break this — a branch inherits coherent indexes and maintains coherency
+   through its own mutations.
+
+Without stated invariants, the paper reads like "we built stuff." With them, it
+reads like "we solved a systems problem with formally stated correctness
+guarantees."
+
+**Important framing note:** Avoid "nothing does this" claims in papers. There is
+always an obscure VLDB paper or a 2018 prototype. Frame novelty as: *"unifying
+previously disjoint techniques under a single execution and storage model, with
+formally stated snapshot-consistency invariants."*
 
 ---
 
-## Paper Roadmap
+## Research Arcs
 
-### Paper 1: Strata — The Multi-Primitive Embedded Database
+The 12 individual paper ideas from the original roadmap compress into four
+conceptual arcs. Externally these read as a coherent research identity, not a
+sequence of disconnected outputs. Internally, each arc may produce 1-3 papers
+depending on depth and results.
+
+### Arc A: Database Architecture
+
+**The foundation paper.** Everything else cites this.
 
 **Venue:** VLDB, OSDI, or SOSP (systems)
 
-**Thesis:** Running KV, JSON, events, state, graph, vectors, and LLM inference in a
-single embedded process achieves competitive performance on each primitive individually
-while enabling cross-primitive capabilities that are impossible when these are separate
-systems.
+**Thesis:** A database designed for continuous speculative computation — where
+branching, auto-embedding, cross-primitive search, and event materialization are
+first-class operations sharing one WAL and one MVCC model — achieves competitive
+performance on each primitive's standard benchmark while enabling an execution
+model that is impractical with polyglot stacks.
 
-**Why it comes first:** Every other paper cites this one. It establishes what Strata
-is, proves the architecture is sound, and builds the benchmarking harness that all
-subsequent papers reuse.
+**Why this framing matters:** "We integrated X + Y + Z" gets rejected at systems
+venues unless the paper articulates a systems principle that required architectural
+rethinking, not just colocation. The principle here is: *all primitives share
+physical layout, lifecycle, and transactional semantics so that speculative
+execution (branching) extends across the entire data substrate.*
+
+Paper 1 must clearly articulate what had to be rethought architecturally —
+specifically the unified WAL, the COW branching model that spans heterogeneous
+indexes, and the write-path hooks that make auto-embedding possible. If it does
+not, reviewers will reduce it to a feature bundle.
+
+**Sub-contributions (may be sections of Paper 1, or standalone papers if deep enough):**
+
+1. **Copy-on-write branching across heterogeneous indexes.** Git-like branching
+   applied to KV, vectors, graphs, BM25 indexes simultaneously. The hard problem
+   is maintaining index consistency across branch boundaries — a BM25 inverted
+   index and an HNSW graph must both reflect the same COW snapshot. This is a
+   publishable database architecture result on its own.
+
+2. **Auto-embedding as a write-path primitive.** Every KV set, JSON insert, and
+   event append is immediately vector-indexed via an in-process embedding model.
+   This trades write amplification for guaranteed query freshness, eliminating
+   batch embedding pipelines. The economics (write cost vs. freshness value)
+   determine whether this is a section of Paper 1 or its own paper.
+
+3. **Event-sourced multi-primitive materialization.** Events project into KV, JSON,
+   graph, and state primitives — all auto-embedded and searchable. Replay from the
+   immutable event log guarantees consistency. This connects event sourcing to
+   multi-modal materialization in a way no existing system does.
 
 **Evaluation structure:**
 
 1. **Microbenchmarks** — Each primitive vs. its standalone equivalent
-   - KV: ops/sec for get, set, CAS at varying value sizes (YCSB workloads A-F)
-     vs. Redis, RocksDB, SQLite
-   - JSON: document insert/query throughput at varying collection sizes vs. MongoDB,
-     SQLite JSON1
-   - Events: append throughput, hash-chain verification speed vs. Kafka (embedded
-     mode), EventStoreDB
-   - Vectors: build time, query latency, recall@10 at varying dataset sizes
-     (ann-benchmarks protocol) vs. FAISS, hnswlib
-   - Graph: traversal latency (BFS, k-hop neighbors) at varying graph sizes vs.
-     Neo4j embedded, SQLite with recursive CTEs
-   - BM25: indexing throughput, query latency vs. Tantivy, SQLite FTS5
+   - KV: YCSB workloads A-F vs. Redis, RocksDB, SQLite
+   - Vectors: ann-benchmarks protocol (recall@K vs. QPS) vs. FAISS, hnswlib
+   - Graph: LDBC Graphalytics (BFS, WCC, PageRank, CDLP, LCC, SSSP) vs. Neo4j
+     embedded, SQLite recursive CTEs
+   - BM25: BEIR nDCG@10 vs. Tantivy, SQLite FTS5
+   - JSON: document insert/query throughput vs. MongoDB, SQLite JSON1
+   - Events: append throughput, hash-chain verification speed
 
-2. **Macrobenchmarks** — End-to-end workflows exercising multiple primitives
-   - "Ingest 1M documents, auto-embed, then search" — full write+embed+search pipeline
+2. **Macrobenchmarks** — Cross-primitive workflows
+   - "Ingest 1M documents, auto-embed, hybrid search" — full write+embed+search
    - "Branch, modify 10K entries, search on branch, merge" — COW overhead
-   - "Cross-primitive search across KV+JSON+Events" — unified retrieval
+   - "Cross-primitive search across KV + JSON + Events" — unified retrieval
+   - **The killer experiment** (see [below](#the-killer-experiment))
 
 3. **Resource efficiency** — Memory, disk, CPU footprint
    - One Strata instance vs. the polyglot stack (Redis + Elasticsearch + Neo4j +
      Kafka + Qdrant) running the same workload
-   - Show the "convergence tax" — ideally small or negative due to eliminated
-     serialization overhead
+   - Quantify the "convergence tax" — measure overhead from sharing vs. savings
+     from eliminated serialization
 
-4. **Capability demonstration** — Things only Strata can do
-   - Auto-embed on write: write a KV entry, immediately search it semantically
-   - Branch all primitives atomically: experiment on a branch, discard or merge
-   - Cross-primitive search: one query finds results across KV, JSON, events, state
+4. **Branching cost** — What speculative execution actually costs
+   - Branch creation latency at varying database sizes
+   - Write amplification on branches (COW efficiency)
+   - Merge performance and conflict resolution
+   - Compare: PostgreSQL snapshots, Redis BGSAVE, ZFS filesystem snapshots
 
 **Baselines:**
 - SQLite (embedded relational)
@@ -141,34 +265,82 @@ subsequent papers reuse.
 - LanceDB (embedded vectors)
 - The polyglot stack: Redis + Elasticsearch + Neo4j + Kafka + Qdrant
 
-**Key result to target:** Strata is within 80-90% of each standalone system on its
-home workload, while using 3-5x less total resources than running them all, and
-enabling capabilities none of them can replicate.
+**Key result posture:**
+
+For microbenchmarks: *competitive within a bounded overhead for most workloads,
+with honest reporting of where we lose and why.* Each standalone system is
+purpose-built for its workload; Strata pays a convergence tax on some primitives
+and gains on others. The paper explains the tradeoff, not just the wins.
+
+For macrobenchmarks: *wins end-to-end where serialization and orchestration
+overhead dominate.* The branched configuration search (killer experiment) is the
+result no polyglot stack can replicate.
+
+**Fairness rubric** (commit to this in the methodology section to preempt reviewer
+attacks on comparison validity):
+- Same durability level (fsync policy matched across all systems)
+- Same hardware, same OS, same kernel tuning
+- Same dataset format and content
+- Published configs for every baseline (readers can reproduce)
+- Baselines tuned with best-of-N configs (report sensitivity to tuning)
+- Report Strata losses alongside wins — full matrix, no cherry-picking
 
 ---
 
-### Paper 2: Typed Hybrid Search with Position-Aware Blending
+### Arc B: Retrieval Model Enabled by That Architecture
 
-**Venue:** SIGIR, ECIR, or CIKM (information retrieval)
+**What retrieval looks like when search, vectors, graph, and inference share one
+address space.**
 
-**Thesis:** Routing typed query expansions (lex, vec, hyde) to their matching index
-(BM25 vs. HNSW) combined with position-aware blending of RRF and reranker signals
-outperforms both fixed-weight fusion and untyped expansion.
+**Venue:** SIGIR, ECIR, CIKM (information retrieval)
 
-**Novel contributions:**
-- Typed expansion routing: lex expansions go to BM25 only, vec/hyde go to HNSW only.
-  No existing system does this routing.
-- Position-aware blending: RRF and reranker signals weighted differently by rank
-  position (top-3: trust RRF more; rank 11+: trust reranker more). Novel formula.
-- Strong signal detection: BM25 probe that skips the expensive pipeline when
-  confidence is high. Latency optimization with quality preservation analysis.
+**Unifying concept: Typed Retrieval Plans.** A query is compiled into a plan with
+typed operators — route, fuse, early-exit, boost — that execute over co-resident
+indexes. This avoids the "bag of heuristics" critique by giving every technique
+a principled role in a retrieval compiler:
+
+| Operator | What It Does | Why It's Principled |
+|---|---|---|
+| `route(expansion_type)` | Lex expansions → BM25; vec/HyDE → HNSW | Type-directed dispatch, not broadcast |
+| `fuse(position_weighted)` | RRF + reranker signals weighted by rank position | Statistically motivated: top-3 vs. tail behave differently |
+| `early_exit(strong_signal)` | BM25 probe skips expensive pipeline when confidence is high | Latency optimization with bounded quality loss |
+| `boost(graph_proximity)` | Graph neighborhood score added post-fusion | Structural signal for entity-centric queries |
+| `decompose(ontology)` | LLM reads ontology, emits typed sub-queries | Query compilation, not ad-hoc expansion |
+
+**Thesis:** Compiling queries into typed retrieval plans over co-resident indexes
+outperforms both fixed-weight fusion and untyped expansion — and the shared-memory
+architecture makes the full plan cheap enough to execute on every query.
+
+**Sub-contributions (1-2 papers):**
+
+1. **Typed hybrid search with position-aware blending.**
+   - `route()`: typed expansion routing. Lex expansions go to BM25 only, vec/HyDE
+     go to HNSW only. Existing hybrid systems broadcast expansions to all indexes.
+   - `fuse()`: position-aware blending. RRF and reranker signals weighted
+     differently by rank position (top-3: trust RRF more; rank 11+: trust
+     reranker more).
+   - `early_exit()`: BM25 probe that skips the expensive pipeline when confidence
+     is high. Latency optimization with quality preservation analysis.
+
+2. **Graph-augmented hybrid retrieval.**
+   - `boost()`: graph proximity score after RRF fusion
+   - `decompose()`: ontology-guided query decomposition (LLM reads ontology,
+     emits typed sub-queries that compile into a retrieval plan)
+   - Graph-context reranking (enriching reranker snippets with graph neighborhood)
+   - Three-signal blending (RRF + reranker + graph proximity, position-aware)
+   - Key experiment: show that graph augmentation helps most on queries requiring
+     structural reasoning (multi-hop, entity-centric) and least on simple keyword
+     queries. Characterize when the graph signal adds value.
+
+3. **Segmented HNSW internals** (if the implementation has a clean publishable
+   result — segmentation strategy, incremental build, or memory layout).
 
 **Evaluation:**
 - BEIR benchmark suite (18 datasets), nDCG@10 headline metric
-- Ablation study: BM25 only → +vectors → +RRF → +typed expansion → +reranking
-  (fixed blend) → +position-aware blend → +strong signal skip
-- Each row adds one component, showing marginal contribution and latency cost
+- Ablation: BM25 only -> +vectors -> +RRF -> +typed expansion -> +reranking
+  (fixed blend) -> +position-aware blend -> +graph boost -> +strong signal skip
 - Quality-latency Pareto chart
+- ann-benchmarks protocol for vector index (recall@K vs. QPS Pareto curves)
 
 **Baselines:**
 - BM25 (Lucene/Tantivy)
@@ -176,270 +348,187 @@ outperforms both fixed-weight fusion and untyped expansion.
 - ColBERT v2 (late interaction)
 - Elasticsearch ELSER (learned sparse)
 - Cohere Rerank + vector search (cloud RAG baseline)
+- Microsoft GraphRAG
 - qmd (local hybrid, architecturally similar)
 
-**Existing infrastructure:** BEIR benchmarks already partially implemented in
-strata-eval with keyword and hybrid results across 15+ datasets.
+**Existing infrastructure:** BEIR benchmarks already implemented in strata-eval
+with keyword and hybrid results across 15 datasets.
 
 ---
 
-### Paper 3: Inference Embedded in the Database
+### Arc C: Co-located Inference as a Systems Primitive
 
-**Venue:** VLDB, EuroSys, or MLSys (systems)
+**What happens when inference is not a service call but a database operation.**
 
-**Thesis:** Co-locating LLM inference (via llama.cpp) inside the database process
-eliminates serialization and network overhead for search-adjacent inference tasks
-(query expansion, reranking, embedding), yielding measurable latency and throughput
-improvements over the standard architecture of separate inference servers.
+**Venue:** VLDB, EuroSys, MLSys (systems)
 
-**Evaluation:**
-- Latency breakdown: search → embed → expand → rerank → generate pipeline
-  - In-process (Strata) vs. localhost inference server vs. remote API
-  - Measure serialization overhead, network round-trips, context switching
-- Throughput: queries/sec under concurrent load
-- Token throughput: tokens/sec for generation, embedding operations
-- Memory efficiency: shared memory between database and inference vs. separate heaps
+**This is primarily a systems paper.** The core contribution is the latency
+economics of co-location. RAG quality is a secondary validation: *we don't regress
+quality while improving latency and reducing engineering complexity.* If framed as
+an ML paper about RAG quality, it competes with GPT-4-class systems on their home
+turf. If framed as a systems paper about co-location economics, it occupies
+uncontested ground.
+
+**Thesis:** Co-locating LLM inference inside the database process — sharing memory
+with indexes, eliminating serialization between retrieval and generation — yields
+measurable latency improvements and enables a single-call RAG primitive (db.ask())
+that achieves comparable answer quality to framework-based RAG with significantly
+lower end-to-end latency and zero integration code.
+
+**Sub-contributions:**
+
+1. **Inference co-location as a systems primitive.**
+   - Latency breakdown: search -> embed -> expand -> rerank -> generate pipeline
+     measured in-process (Strata) vs. localhost inference server vs. remote API
+   - Quantify serialization overhead, network round-trips, context switching
+   - Token throughput: tokens/sec for generation, embedding operations
+   - Memory efficiency: shared memory vs. separate heaps
+   - **Key systems result:** per-stage latency attribution showing where
+     serialization dominates and where compute dominates
+
+2. **Native RAG with zero serialization overhead.**
+   - A single-call RAG primitive (db.ask()) — search and generation in the same
+     process, no integration code
+   - RAG quality as validation (not contribution): answer accuracy/F1,
+     faithfulness, citation precision — showing *parity*, not superiority
+   - End-to-end latency: query in -> answer out, breakdown by component
+   - Datasets: Natural Questions, TriviaQA, FinanceBench, HotpotQA
 
 **Baselines:**
 - Strata with external Ollama (same machine, network hop)
 - Strata with cloud API (OpenAI/Anthropic)
 - LangChain + Ollama + ChromaDB (standard stack)
-- vLLM + Qdrant (optimized separate services)
-
----
-
-### Paper 4: Native RAG with Zero-Serialization Overhead
-
-**Venue:** ACL, EMNLP, or NeurIPS (AI/ML)
-
-**Thesis:** A single-call RAG primitive (db.ask()) that runs search and generation
-in the same process achieves comparable answer quality to framework-based RAG
-(LangChain, LlamaIndex) with significantly lower latency and no integration code.
-
-**Evaluation:**
-- RAG quality metrics:
-  - Answer correctness (exact match, F1 against gold answers)
-  - Faithfulness (does the answer only use retrieved context? LLM-as-judge)
-  - Citation precision (are source references accurate?)
-  - Answer relevance
-- End-to-end latency: query in → answer out
-  - Breakdown: search time, context assembly, generation time
-- Datasets: Natural Questions, TriviaQA, FinanceBench, HotpotQA
-
-**Baselines:**
-- Closed-book LLM (no retrieval)
-- Naive RAG: vector search + GPT-4
-- LangChain + Pinecone + GPT-4
+- LangChain + Pinecone + GPT-4 (cloud RAG)
 - LlamaIndex + ChromaDB + GPT-4
-- Strata db.ask() with local model
-- Strata db.ask() with cloud model
+- vLLM + Qdrant (optimized separate services)
+- Closed-book LLM (no retrieval, lower bound)
 
 ---
 
-### Paper 5: Segmented HNSW
+### Arc D: Databases Designed for Agents
 
-**Venue:** VLDB, NeurIPS, or ICML (depending on framing)
+**What a database looks like when its primary consumer is an LLM, not a human
+writing SQL.**
 
-**Thesis:** [Depends on the specific novelty of Strata's HNSW implementation —
-segmentation strategy, incremental build properties, or memory layout.]
-
-**Evaluation:**
-- ann-benchmarks protocol
-- Datasets: GloVe-100, SIFT-128, GloVe-200, deep-image-96, fashion-mnist
-- Metric: Recall@10 vs. queries/second (Pareto curve)
-- Build time and memory footprint at varying dataset sizes (10K to 10M vectors)
-
-**Baselines:**
-- FAISS-HNSW
-- hnswlib
-- Annoy
-- ScaNN
-- Vamana/DiskANN
-
----
-
-### Paper 6: Graph-Augmented Hybrid Retrieval
-
-**Venue:** SIGIR, KDD, or NeurIPS (IR/AI)
-
-**Thesis:** Fusing BM25 + dense vectors + graph proximity + ontology-guided query
-decomposition in a single engine outperforms each signal alone. The graph provides
-structural reasoning that statistical retrieval cannot replicate.
-
-**Novel contributions:**
-- Graph proximity boost after RRF fusion (Mode B from issue #1270)
-- Ontology-guided query understanding (LLM reads ontology, decomposes query into
-  typed retrieval plan)
-- Graph-context reranking (enriching reranker snippets with graph neighborhood)
-- Three-signal blending (RRF + reranker + graph proximity, position-aware)
-
-**Evaluation:**
-- BEIR + domain-specific benchmarks with knowledge graphs
-  (build a medical/financial graph with ontology)
-- Ablation: BM25+vectors → +graph boost → +ontology expansion → +graph-context
-  reranking → +three-signal blending
-- Compare against: Elasticsearch, ColBERT, Microsoft GraphRAG, standard vector RAG
-
-**Key experiment:** Show that graph augmentation helps most on queries requiring
-structural reasoning (multi-hop, entity-centric) and least on simple keyword queries.
-Characterize when the graph signal adds value.
-
-**Depends on:** Paper 1 (architecture), Paper 2 (hybrid search baseline)
-
----
-
-### Paper 7: Recursive Query Execution Over Indexed Primitives
-
-**Venue:** NeurIPS, ICML, or ACL (AI/ML)
-
-**Thesis:** RLMs (Recursive Language Models) operating over indexed database
-primitives (BM25, vectors, graph, ontology) outperform both single-shot RAG and
-RLMs operating over raw text, because the model can efficiently navigate structured
-data instead of grepping strings.
-
-**Novel contributions:**
-- Replacing RLM's Python REPL (string slicing, regex) with indexed search + graph
-  traversal changes the computational complexity of what the model can explore
-- Three-tier implementation: iterative search (no code execution) → sandboxed code
-  execution over Strata API → branch-scoped recursive exploration
-
-**Evaluation:**
-- Long-context QA benchmarks (from the original RLM paper)
-- Multi-hop QA: HotpotQA, MuSiQue
-- Compare: vanilla RAG, RLM-over-text (reference implementation), RLM-over-Strata
-- Key experiment: show that an 8B model with Strata's tools matches or exceeds a
-  70B model with raw-text RLM
-
-**Depends on:** Paper 1 (architecture), Paper 6 (graph-augmented search)
-
----
-
-### Paper 8: Agent-First Database Design
-
-**Venue:** CHI, UIST, or NeurIPS (HCI/AI)
+**Venue:** CHI, UIST, NeurIPS (HCI/AI)
 
 **Thesis:** Systematic design principles for LLM-consumable database APIs —
-describe() introspection, actionable errors, explain mode, progressive capability
-disclosure — measurably improve agent task completion rates and reduce error recovery
-cycles.
+introspection, actionable errors, ontology-validated state machines, and
+branch-scoped recursive execution — measurably improve agent task completion
+rates and reduce error recovery cycles. The branch-as-sandbox model enables
+recursive reasoning that is impossible with append-only databases.
 
-**Novel contributions:**
-- Formal study of how API design choices affect LLM agent performance
-- Principles: discovery over documentation, errors as instructions, tool schemas as
-  documentation, consistent patterns, minimal bootstrapping, graceful degradation
-- Quantitative measurement of agent self-correction rates
+This arc consolidates the agent-first API design, graph-validated state machines,
+and recursive query execution stories into one coherent HCI/systems boundary
+narrative.
 
-**Evaluation:**
-- A/B test agent performance:
-  - With vs. without describe() introspection
-  - Rich vs. generic error messages
-  - With vs. without explain mode
-  - With vs. without fuzzy matching on typos
-- Metrics: task completion rate, number of API calls to complete task, error
-  recovery rate, time to first successful query
-- Agent baselines: Claude, GPT-4, open-source models (test generalization across
-  LLM capabilities)
+**Sub-contributions:**
 
-**Depends on:** Paper 1 (architecture), implementation of #1274
+1. **Agent-first API design principles.**
+   - describe() introspection, actionable errors, explain mode, progressive
+     capability disclosure
+   - Quantitative A/B test: agent performance with vs. without each feature
+   - Metrics: task completion rate, API calls to complete task, error recovery
+     rate, time to first successful query
+   - Test across Claude, GPT-4, and open-source models to show generalization
 
----
+2. **Database-native state machines via graph ontology.**
+   - Property graph ontologies (object types = states, link types = transitions)
+     define and validate state machines
+   - Rich error messages include valid transitions and natural-language suggestions
+   - Agent success rate on stateful tasks with FSM validation + rich errors vs.
+     without
+   - Compare: application-layer FSM (invisible to agent), PostgreSQL triggers,
+     Strata graph-validated FSM
 
-### Paper 9: Event-Sourced Multi-Primitive Materialization
+3. **Recursive query execution over indexed primitives.**
+   - RLMs (Recursive Language Models) operating over indexed database primitives
+     (BM25, vectors, graph, ontology) vs. RLMs over raw text
+   - Branch-scoped recursive exploration: agents branch, explore speculatively,
+     discard or merge findings
+   - Key experiment: Strata's indexed primitives shift the model-size frontier —
+     reducing the model size needed to solve structured multi-hop tasks under
+     fixed compute budgets. Let the numbers determine the magnitude; do not
+     pre-commit to a specific model-size ratio in the paper.
 
-**Venue:** VLDB or SIGMOD (databases)
-
-**Thesis:** When event projections automatically materialize events into KV, JSON,
-graph, and state primitives — all of which are auto-embedded and searchable — the
-database becomes a self-organizing knowledge base that eliminates the need for
-separate event streaming, projection services, and materialized view management.
-
-**Novel contributions:**
-- A single event produces multi-primitive artifacts (KV + JSON + Graph + State)
-- All artifacts are auto-embedded and searchable via hybrid search
-- Projection replay from immutable event log guarantees consistency
-- No existing system combines event sourcing with multi-modal materialization +
-  auto-embedding
-
-**Evaluation:**
-- Projection throughput: events/sec with varying numbers of projection actions
-- Consistency: verify materialized views match event log under concurrent writes
-- Query quality: db.ask() answers when querying projected views vs. raw events
-  vs. both
-- Compare against: Kafka + Flink + PostgreSQL (standard event sourcing stack),
-  EventStoreDB + custom projections
-
-**Depends on:** Paper 1 (architecture), implementation of RFC: Event Projections
-
----
-
-### Paper 10: Database-Native State Machines via Graph Ontology
-
-**Venue:** VLDB, SIGMOD, or ICSE (databases/software engineering)
-
-**Thesis:** When a database exposes valid state transitions as a queryable graph
-ontology with actionable error messages, LLM agents achieve higher task completion
-rates on stateful workflows with fewer invalid operations.
-
-**Novel contributions:**
-- Using property graph ontologies (object types = states, link types = transitions)
-  to define and validate state machines
-- State machines become first-class, queryable, graph-defined entities
-- Rich error messages include valid transitions and natural-language suggestions
-- Agents can introspect the FSM via ontology_summary() and
-  state_valid_transitions()
-
-**Evaluation:**
-- Agent success rate on stateful tasks (pipeline management, workflow orchestration)
-  with FSM validation + rich errors vs. without
-- Self-correction rate: how often agents recover from invalid transitions using the
-  error message alone
-- Compare: application-layer FSM (invisible to agent), database constraint-based
-  FSM (PostgreSQL triggers), Strata graph-validated FSM
-
-**Depends on:** Paper 1 (architecture), Paper 8 (agent-first design), implementation
-of RFC: Graph-Validated State Transitions
-
----
-
-### Paper 11: Auto-Embedding as a Database Primitive
-
-**Venue:** VLDB or SIGIR (databases/IR)
-
-**Thesis:** Write-time automatic embedding — where every KV set, JSON insert, and
-event append is immediately vector-indexed — changes the economics of vector search
-by trading write amplification for guaranteed query freshness, eliminating batch
-embedding pipelines entirely.
-
-**Evaluation:**
-- Write amplification: throughput with auto-embed on vs. off
-- Query freshness: time from write to searchable (Strata: immediate vs. batch
-  pipelines: minutes to hours)
-- Retrieval quality: does inline embedding with a small local model match quality
-  of batch embedding with a large cloud model?
-- Cost analysis: total compute for write-time embed vs. periodic batch re-embed
+**Reproducibility safeguards for agent evaluations** (preempts HCI/AI reviewer
+attacks on prompt dependence, model drift, and small sample sizes):
+- Fixed tasks with deterministic grading (no subjective evaluation)
+- Published tool-call traces for every experiment
+- Multiple models (Claude, GPT-4, open-source 8B/70B) to show generalization
+- Multiple seeds per model (minimum 5 runs)
+- Strict budgets: max tool calls, max tokens, max wall-clock time per task
+- Task suite versioned and frozen before experiments run (pre-registration)
 
 **Baselines:**
-- Batch embedding pipeline (standard approach)
-- Streaming embedding (Kafka + embedding service)
-- Strata auto-embed (synchronous, in-process)
+- Standard tool-use agent with generic database (PostgreSQL, Redis)
+- RLM reference implementation over raw text
+- LangChain agent with separate vector store + KV store
+- Application-layer FSM with generic error messages
 
 ---
 
-### Paper 12: Copy-on-Write Branching for Multi-Primitive Databases
+## The Killer Experiment
 
-**Venue:** VLDB or CIDR (databases)
+Every paper needs thorough microbenchmarks and ablations. But the experiment that
+makes reviewers remember the paper is one that **only Strata can run** — and that
+would be absurd to attempt with a polyglot stack.
 
-**Thesis:** Git-like copy-on-write branching applied to a multi-primitive database
-(KV, JSON, events, state, graph, vectors) enables low-cost experimentation — A/B
-testing search configurations, trying different ontology schemas, comparing
-embedding models — without affecting production data.
+**Branched Configuration Search:**
 
-**Evaluation:**
-- Branch creation overhead at varying database sizes
-- Write amplification on branches (COW efficiency)
-- Merge performance and conflict resolution
-- Case studies: parameter tuning, ontology A/B testing, embedding model comparison
-- Compare: database snapshots (PostgreSQL), Redis BGSAVE, filesystem snapshots (ZFS)
+> Index a corpus once. Fork 30 branches. Apply small per-branch deltas (schema
+> tweak, ontology change, retrieval config, partial re-embed). Evaluate each
+> branch. Converge on an optimal configuration in minutes.
+
+The key insight that makes this uncopyable: branches **reuse physical structures**
+from the base. The polyglot equivalent requires 30 separate full ingestion +
+indexing cycles because there is no shared base state.
+
+**Experiment design:**
+
+1. **Base state:** Index a BEIR corpus with full BM25 + HNSW + graph indexes.
+   This is done once.
+
+2. **Fork 30 branches.** Each branch applies a small delta:
+   ```
+   5 embedding models  x  3 BM25 (k1, b) settings  x  2 ontology schemas
+   = 30 configurations, each on its own COW branch
+   ```
+   Per-branch work: re-embed ~10K documents with a different model, adjust BM25
+   parameters, swap ontology schema. The remaining corpus and indexes are shared
+   via COW — no copying, no reindexing.
+
+3. **Evaluate each branch** on BEIR nDCG@10.
+
+4. **Polyglot baseline:** 30 separate Elasticsearch + Qdrant + model server
+   deployments, each requiring full corpus ingestion and index building from
+   scratch.
+
+**Metrics (not just wall clock):**
+- **Total CPU-seconds** across all branches (captures actual compute, not just
+  parallelism)
+- **Total bytes written** (COW efficiency — branches write only deltas)
+- **Time-to-first-query on a new branch** (how fast a branch becomes searchable)
+- **Wall-clock time** to evaluate all 30 configurations
+- **nDCG@10 variance** across branches (confirms index isolation — branches
+  produce different results)
+
+**Why "just run 30 Docker containers" is not equivalent:**
+- Docker containers replicate the full dataset and rebuild all indexes per config.
+  Strata branches share the base and write only deltas.
+- Docker requires orchestration code to manage 30 deployments. Strata requires
+  `branch create config-17`.
+- Docker ingestion is O(N * corpus_size). Strata branching is O(N * delta_size).
+
+This demonstrates:
+- Why convergence matters (one system, not 30 deployments)
+- Why branching matters (shared base state, not full reindex)
+- Why embedded inference matters (no external model server per branch)
+- Why this is a new execution model, not a feature bundle
+
+Without a "this would be absurd elsewhere" demonstration, reviewers will reduce
+everything to microbenchmark comparisons where Strata inevitably loses to
+purpose-built systems on their home turf.
 
 ---
 
@@ -477,6 +566,8 @@ Reviewers immediately distrust results on custom datasets.
   Recall@K vs. QPS Pareto curves.
 - **YCSB** — Yahoo Cloud Serving Benchmark. Standard for KV store performance
   (workloads A-F covering different read/write ratios).
+- **LDBC Graphalytics** — Standard for graph algorithm performance (BFS, WCC,
+  PageRank, CDLP, LCC, SSSP).
 - **Domain-specific:** FinanceBench (financial QA), MedQA (medical),
   HotpotQA/MuSiQue (multi-hop reasoning).
 
@@ -497,7 +588,7 @@ Reviewers immediately distrust results on custom datasets.
 | Metric | What It Measures |
 |---|---|
 | p50/p95/p99 latency | Tail latency matters, not just average |
-| Throughput (QPS) | Queries per second at saturation |
+| Throughput (QPS, ops/s) | Queries or operations per second at saturation |
 | Index build time | Write-path cost |
 | Memory footprint | Practical deployment constraint |
 | Index size on disk | Storage cost |
@@ -627,7 +718,24 @@ Every cell is filled. Losses are shown. Significance is marked.
 
 ## Benchmark Infrastructure
 
-The harness that powers all papers. Build once, reuse everywhere.
+### The Harness as an Independent Contribution
+
+The benchmarking harness itself is a significant asset. It provides reproducible
+cross-modal benchmarking — the ability to run DB, IR, and ML experiments on
+shared datasets with shared methodology and compare results longitudinally. This
+is closer to what made TPC benchmarks influential than to a typical paper's eval
+script.
+
+Consider releasing the harness (strata-eval) before most papers. This:
+- Builds credibility with reviewers ("they open-sourced the harness, we can verify")
+- Invites community contributions and scrutiny
+- Establishes Strata's evaluation methodology as a reference point
+- Creates citation opportunities independent of any single paper
+
+The harness already implements: BEIR (15 datasets), YCSB (6 workloads),
+ann-benchmarks (3 datasets), LDBC Graphalytics (6 algorithms), result recording
+with hardware metadata, and report generation. All benchmarks execute via direct
+CLI invocation with no Python overhead in timing loops.
 
 ### Experiment Configuration
 
@@ -730,38 +838,41 @@ After all runs complete, automated pipeline:
 ## Sequencing and Dependencies
 
 ```
-Paper 1: Architecture ─────────────────────────────────┐
-  │                                                     │
-  ├──► Paper 2: Hybrid Search                           │
-  │      │                                              │
-  │      ├──► Paper 6: Graph-Augmented Retrieval        │
-  │      │      │                                       │
-  │      │      └──► Paper 7: Recursive Queries         │
-  │      │                                              │
-  │      └──► Paper 4: Native RAG                       │
-  │                                                     │
-  ├──► Paper 3: In-Process Inference                    │
-  │                                                     │
-  ├──► Paper 5: Segmented HNSW                          │
-  │                                                     │
-  ├──► Paper 11: Auto-Embedding                         │
-  │                                                     │
-  ├──► Paper 12: COW Branching                          │
-  │                                                     │
-  └──► Paper 8: Agent-First Design ─────────────────────┤
-         │                                              │
-         └──► Paper 10: Graph-Validated State Machines  │
-                                                        │
-Paper 9: Event Projections ◄────────────────────────────┘
+Arc A: Architecture (Paper 1) ──────────────────────────┐
+  │                                                      │
+  │   Sub-contributions that may be sections             │
+  │   or standalone papers:                              │
+  │   - COW branching across heterogeneous indexes       │
+  │   - Auto-embedding as write-path primitive            │
+  │   - Event-sourced multi-primitive materialization     │
+  │                                                      │
+  ├──► Arc B: Retrieval Model                            │
+  │      - Typed retrieval plans (query compiler)        │
+  │      - Graph-augmented plan operators                │
+  │      - (Segmented HNSW internals, if publishable)    │
+  │                                                      │
+  ├──► Arc C: Co-located Inference                       │
+  │      - Inference co-location latency economics       │
+  │      - Native RAG (db.ask())                         │
+  │                                                      │
+  └──► Arc D: Databases for Agents                       │
+         - Agent-first API design principles             │
+         - Graph-validated state machines                 │
+         - Recursive query execution (branch-scoped)     │
+                                                         │
+     Killer Experiment (branched config search) ◄────────┘
 ```
 
-**Phase 1 (now):** Paper 1 — Architecture. Build the harness.
+**Phase 1 (now):** Arc A — Architecture. Build the harness. Establish the thesis.
+The branched configuration search experiment is the centerpiece.
 
-**Phase 2 (after harness):** Papers 2, 3, 5, 11, 12 — independent papers that
-each evaluate one aspect of the existing system. Can be written in parallel.
+**Phase 2 (after harness):** Arcs B and C — independent papers that each evaluate
+one consequence of the shared architecture. Can be written in parallel. These
+reuse 80% of the harness infrastructure.
 
-**Phase 3 (after roadmap features ship):** Papers 4, 6, 7, 8, 9, 10 — depend
-on features from issues #1269-#1274 and the RFCs.
+**Phase 3 (after roadmap features ship):** Arc D — depends on features from issues
+#1269-#1274 and the RFCs. Also depends on Arc B results (the retrieval model that
+agents use).
 
 ---
 
@@ -784,6 +895,7 @@ on features from issues #1269-#1274 and the RFCs.
 - [MTEB](https://github.com/embeddings-benchmark/mteb) — Massive Text Embedding Benchmark
 - [ann-benchmarks](https://ann-benchmarks.com/) — Benchmarking approximate nearest neighbor algorithms
 - [YCSB](https://github.com/brianfrankcooper/YCSB) — Yahoo Cloud Serving Benchmark (Cooper et al., 2010)
+- [LDBC Graphalytics](https://graphalytics.org/) — Graph algorithm benchmarking (Iosup et al., 2016)
 
 ### Related Academic Work
 - [GraphRAG](https://arxiv.org/abs/2404.16130) — Microsoft, knowledge graph enhanced RAG

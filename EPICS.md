@@ -1,10 +1,10 @@
 # Strata-Eval: Epics and Stories
 
-Benchmarking infrastructure to support 12 academic papers on Strata. Organized as
+Benchmarking infrastructure to support 4 research arcs on Strata. Organized as
 epics (major work areas) and stories (individual deliverables). Each story lists
 files to create/modify, complexity (S/M/L), and dependencies.
 
-See RESEARCH_ROADMAP.md for the papers these benchmarks support.
+See RESEARCH_ROADMAP.md for the research arcs and thesis these benchmarks support.
 
 ---
 
@@ -12,11 +12,10 @@ See RESEARCH_ROADMAP.md for the papers these benchmarks support.
 
 - [Epic 0: Foundation — Extend StrataClient](#epic-0-foundation--extend-strataclient)
 - [Epic 1: Core Infrastructure](#epic-1-core-infrastructure)
-- [Epic 2: Paper 1 — Architecture Benchmarks](#epic-2-paper-1--architecture-benchmarks)
-- [Epic 3: Paper 2 — Hybrid Search Benchmarks](#epic-3-paper-2--hybrid-search-benchmarks)
-- [Epic 4: Paper 3 — Inference Benchmarks (Scaffold)](#epic-4-paper-3--inference-benchmarks-scaffold)
-- [Epic 5: Paper 4 — RAG Benchmarks](#epic-5-paper-4--rag-benchmarks)
-- [Epic 6: Future Paper Stubs (Papers 5-12)](#epic-6-future-paper-stubs-papers-5-12)
+- [Epic 2: Arc A — Architecture Benchmarks](#epic-2-arc-a--architecture-benchmarks)
+- [Epic 3: Arc B — Retrieval Benchmarks](#epic-3-arc-b--retrieval-benchmarks)
+- [Epic 4: Arc C — Inference + RAG Benchmarks](#epic-4-arc-c--inference--rag-benchmarks)
+- [Epic 5: Arc D + Future Work Stubs](#epic-5-arc-d--future-work-stubs)
 - [Implementation Sequencing](#implementation-sequencing)
 - [Verification Criteria](#verification-criteria)
 
@@ -62,7 +61,7 @@ See RESEARCH_ROADMAP.md for the papers these benchmarks support.
 
 ## Epic 0: Foundation — Extend StrataClient
 
-The CLI wrapper only exposes KV, Vector, and Graph namespaces. Paper 1 microbenchmarks
+The CLI wrapper only exposes KV, Vector, and Graph namespaces. Arc A microbenchmarks
 need JSON, Event, State, and Inference access. This unblocks almost everything else.
 
 ### Story 0.1: Add missing primitive namespaces to StrataClient
@@ -95,7 +94,7 @@ need JSON, Event, State, and Inference access. This unblocks almost everything e
 
 ## Epic 1: Core Infrastructure
 
-Shared harness that all papers depend on. Built first, used everywhere.
+Shared harness that all arcs depend on. Built first, used everywhere.
 The principle: coexist with the existing CLI-arg approach, don't replace it.
 
 ### Story 1.1: Experiment configuration system
@@ -257,7 +256,7 @@ run significance tests, produce structured comparison.
 
 **Files to create:**
 - `lib/charts.py` — matplotlib with pgf backend for vector PDF/PGF output
-- `scripts/generate_paper_tables.py` — per-paper table/chart CLI
+- `scripts/generate_paper_tables.py` — per-arc table/chart CLI
 
 **Files to modify:**
 - `lib/report.py` — enhance `_generate_latex()` with significance markers, bold best
@@ -300,7 +299,7 @@ run significance tests, produce structured comparison.
 
 **Usage:**
 ```bash
-python scripts/run_experiment.py configs/paper1/kv_microbench.yaml
+python scripts/run_experiment.py configs/arc_a/kv_microbench.yaml
 python scripts/run_experiment.py config.yaml --compare results/baseline.json
 ```
 
@@ -314,10 +313,12 @@ python scripts/run_experiment.py config.yaml --compare results/baseline.json
 
 ---
 
-## Epic 2: Paper 1 — Architecture Benchmarks
+## Epic 2: Arc A — Architecture Benchmarks
 
 Microbenchmarks for each primitive, cross-primitive macrobenchmarks, resource
-efficiency comparison against the polyglot stack.
+efficiency comparison against the polyglot stack. Includes the killer experiment
+(branched configuration search) that demonstrates the speculative data substrate
+thesis.
 
 ### Story 2.1: Microbenchmark suite — KV
 
@@ -484,7 +485,7 @@ class BaselineRunner(ABC):
 
 **Complexity:** L
 
-**What:** The headline result for Paper 1. Run the same workload on one Strata
+**What:** The headline result for Arc A. Run the same workload on one Strata
 instance vs. Redis + Elasticsearch + Qdrant running simultaneously. Measure total
 CPU, memory, and disk usage across all processes.
 
@@ -502,29 +503,69 @@ Strata               1.8        2.1          3,400
 
 ---
 
-### Story 2.8: Paper 1 experiment configs
+### Story 2.8: Branched configuration search (killer experiment)
+
+**Complexity:** L
+
+**What:** The experiment that only Strata can run. Sweep a combinatorial
+configuration space using COW branches — each branch has its own embedding model,
+BM25 parameters, and ontology schema — and converge on an optimal configuration
+in minutes. Compare against the polyglot equivalent (30 separate deployments
+requiring full reindexing each).
+
+**Configuration grid:**
+```
+5 embedding models  x  3 BM25 (k1, b) settings  x  2 ontology schemas
+= 30 configurations, each on its own COW branch
+```
+
+**Metrics:**
+- Total wall-clock time to evaluate all 30 configurations (BEIR nDCG@10)
+- Per-branch creation overhead (time, memory, disk)
+- Per-branch search latency and quality
+- Polyglot baseline: 30 separate Elasticsearch + Qdrant + model server deployments
+
+**Target result:** Strata completes the sweep in minutes; polyglot stack requires
+hours and significant orchestration code.
+
+**Files to create:**
+- `benchmarks/branching/__init__.py`
+- `benchmarks/branching/config.py` — configuration grid definitions
+- `benchmarks/branching/runner.py` — `BranchConfigSearchBenchmark(BaseBenchmark)`
+
+**Files to modify:**
+- `benchmarks/__init__.py` — register `branching`
+
+**Dependencies:** 0.1 (branch commands in client), 2.6 (polyglot baselines)
+
+---
+
+### Story 2.9: Arc A experiment configs
 
 **Complexity:** S
 
-**What:** YAML configs for all Paper 1 experiments.
+**What:** YAML configs for all Arc A experiments.
 
 **Files to create:**
-- `configs/paper1/kv_microbench.yaml`
-- `configs/paper1/json_microbench.yaml`
-- `configs/paper1/event_microbench.yaml`
-- `configs/paper1/vector_microbench.yaml`
-- `configs/paper1/graph_microbench.yaml`
-- `configs/paper1/search_microbench.yaml`
-- `configs/paper1/cross_primitive.yaml`
-- `configs/paper1/resource_efficiency.yaml`
+- `configs/arc_a/kv_microbench.yaml`
+- `configs/arc_a/json_microbench.yaml`
+- `configs/arc_a/event_microbench.yaml`
+- `configs/arc_a/vector_microbench.yaml`
+- `configs/arc_a/graph_microbench.yaml`
+- `configs/arc_a/search_microbench.yaml`
+- `configs/arc_a/cross_primitive.yaml`
+- `configs/arc_a/resource_efficiency.yaml`
+- `configs/arc_a/branched_config_search.yaml`
 
 **Dependencies:** 1.1
 
 ---
 
-## Epic 3: Paper 2 — Hybrid Search Benchmarks
+## Epic 3: Arc B — Retrieval Benchmarks
 
 Ablation study on BEIR, quality-latency Pareto analysis, external baselines.
+Evaluates what retrieval looks like when search, vectors, graph, and inference
+share one address space.
 
 ### Story 3.1: BEIR ablation support
 
@@ -609,23 +650,25 @@ comparison in the results table.
 
 ---
 
-### Story 3.4: Paper 2 experiment configs
+### Story 3.4: Arc B experiment configs
 
 **Complexity:** S
 
 **Files to create:**
-- `configs/paper2/ablation_nfcorpus.yaml`
-- `configs/paper2/ablation_full_beir.yaml`
-- `configs/paper2/pareto_sweep.yaml`
-- `configs/paper2/baselines_comparison.yaml`
+- `configs/arc_b/ablation_nfcorpus.yaml`
+- `configs/arc_b/ablation_full_beir.yaml`
+- `configs/arc_b/pareto_sweep.yaml`
+- `configs/arc_b/baselines_comparison.yaml`
 
 **Dependencies:** 1.1
 
 ---
 
-## Epic 4: Paper 3 — Inference Benchmarks (Scaffold)
+## Epic 4: Arc C — Inference + RAG Benchmarks
 
-Scaffold only — define the structure, mark implementation as TODO.
+Co-located inference and native RAG. Evaluates what happens when inference is not
+a service call but a database operation — the latency economics of co-location
+and the quality of single-call RAG (db.ask()).
 
 ### Story 4.1: Inference benchmark scaffold
 
@@ -657,17 +700,13 @@ Scaffold only — define the structure, mark implementation as TODO.
 **Files to modify:**
 - `benchmarks/__init__.py` — register
 
-**Create:** `configs/paper3/latency_breakdown.yaml`, `configs/paper3/throughput.yaml`
+**Create:** `configs/arc_c/latency_breakdown.yaml`, `configs/arc_c/throughput.yaml`
 
 **Dependencies:** 0.1 (inference namespace in client)
 
 ---
 
-## Epic 5: Paper 4 — RAG Benchmarks
-
-Complete the existing RAGAS scaffold and add standard RAG datasets.
-
-### Story 5.1: Complete RAGAS implementation
+### Story 4.2: Complete RAGAS implementation
 
 **Complexity:** M
 
@@ -689,7 +728,7 @@ Complete the existing RAGAS scaffold and add standard RAG datasets.
 
 ---
 
-### Story 5.2: Add standard RAG evaluation datasets
+### Story 4.3: Add standard RAG evaluation datasets
 
 **Complexity:** M
 
@@ -705,11 +744,11 @@ Complete the existing RAGAS scaffold and add standard RAG datasets.
 - `benchmarks/ragas_bench/config.py` — add dataset definitions with URLs
 - `benchmarks/ragas_bench/runner.py` — add `--dataset` argument, download logic
 
-**Dependencies:** 5.1
+**Dependencies:** 4.2
 
 ---
 
-### Story 5.3: RAG baseline runners (stub)
+### Story 4.4: RAG baseline runners (stub)
 
 **Complexity:** S (stub only)
 
@@ -724,41 +763,42 @@ Complete the existing RAGAS scaffold and add standard RAG datasets.
 
 ---
 
-### Story 5.4: Paper 4 experiment configs
+### Story 4.5: Arc C experiment configs
 
 **Complexity:** S
 
 **Files to create:**
-- `configs/paper4/rag_nq.yaml`
-- `configs/paper4/rag_triviaqa.yaml`
-- `configs/paper4/baselines_comparison.yaml`
+- `configs/arc_c/rag_nq.yaml`
+- `configs/arc_c/rag_triviaqa.yaml`
+- `configs/arc_c/baselines_comparison.yaml`
 
 **Dependencies:** 1.1
 
 ---
 
-## Epic 6: Future Paper Stubs (Papers 5-12)
+## Epic 5: Arc D + Future Work Stubs
 
-Minimal directory structure with config and stub runners. Each stub has a
-`NotImplementedError` with a clear description of what the benchmark will measure
-when implemented.
+Arc D benchmarks (agent-first APIs, graph-validated state machines, recursive
+query execution) and stubs for remaining sub-contributions that may become
+standalone papers. Each stub has a `NotImplementedError` with a clear description
+of what the benchmark will measure when implemented.
 
-### Story 6.1: Create stub benchmark directories
+### Story 5.1: Create stub benchmark directories
 
 **Complexity:** M (many files, each small and formulaic)
 
 **Stubs to create:**
 
-| Paper | Directory | What it will benchmark |
-|-------|-----------|----------------------|
-| 5: Segmented HNSW | `benchmarks/ann/pareto.py` (extend existing) | ef_search sweep, recall vs QPS Pareto curves, build time at 1M-10M scale |
-| 6: Graph-Augmented Retrieval | `benchmarks/graph_retrieval/` | BEIR + knowledge graph, ablation of graph signals, structural vs statistical retrieval |
-| 7: Recursive Queries | `benchmarks/recursive_query/` | Multi-hop QA (HotpotQA, MuSiQue), RLM-over-Strata vs RLM-over-text, iteration count analysis |
-| 8: Agent-First Design | `benchmarks/agent_bench/` | Agent task completion rate, API calls per task, error recovery rate, with/without describe() and rich errors |
-| 9: Event Projections | `benchmarks/event_projection/` | Projection throughput (events/sec with varying action counts), materialization consistency, replay performance |
-| 10: State Machines | `benchmarks/state_machine/` | FSM validation overhead per state write, agent self-correction rate with/without actionable errors |
-| 11: Auto-Embedding | `benchmarks/auto_embed/` | Write amplification, embedding throughput, query freshness (time from write to searchable), model size vs quality tradeoff |
-| 12: COW Branching | `benchmarks/cow_branching/` | Branch creation overhead at varying DB sizes, write amplification on branches, merge performance |
+| Arc / Sub-contribution | Directory | What it will benchmark |
+|------------------------|-----------|----------------------|
+| B: Segmented HNSW | `benchmarks/ann/pareto.py` (extend existing) | ef_search sweep, recall vs QPS Pareto curves, build time at 1M-10M scale |
+| B: Graph-Augmented Retrieval | `benchmarks/graph_retrieval/` | BEIR + knowledge graph, ablation of graph signals, structural vs statistical retrieval |
+| D: Recursive Queries | `benchmarks/recursive_query/` | Multi-hop QA (HotpotQA, MuSiQue), RLM-over-Strata vs RLM-over-text, branch-scoped exploration |
+| D: Agent-First Design | `benchmarks/agent_bench/` | Agent task completion rate, API calls per task, error recovery rate, with/without describe() and rich errors |
+| A: Event Projections | `benchmarks/event_projection/` | Projection throughput (events/sec with varying action counts), materialization consistency, replay performance |
+| D: Graph-Validated State Machines | `benchmarks/state_machine/` | FSM validation overhead per state write, agent self-correction rate with/without actionable errors |
+| A: Auto-Embedding | `benchmarks/auto_embed/` | Write amplification, embedding throughput, query freshness (time from write to searchable), model size vs quality tradeoff |
+| A: COW Branching | `benchmarks/cow_branching/` | Branch creation overhead at varying DB sizes, write amplification on branches, merge performance |
 
 **Each stub directory contains:**
 - `__init__.py`
@@ -774,19 +814,19 @@ when implemented.
 
 ---
 
-### Story 6.2: Create stub experiment configs
+### Story 5.2: Create stub experiment configs
 
 **Complexity:** S
 
 **Files to create:**
-- `configs/paper5/ann_pareto.yaml`
-- `configs/paper6/graph_retrieval.yaml`
-- `configs/paper7/recursive_query.yaml`
-- `configs/paper8/agent_tasks.yaml`
-- `configs/paper9/event_projection.yaml`
-- `configs/paper10/state_machine.yaml`
-- `configs/paper11/auto_embed.yaml`
-- `configs/paper12/cow_branching.yaml`
+- `configs/arc_b/ann_pareto.yaml`
+- `configs/arc_b/graph_retrieval.yaml`
+- `configs/arc_d/recursive_query.yaml`
+- `configs/arc_d/agent_tasks.yaml`
+- `configs/arc_a/event_projection.yaml`
+- `configs/arc_d/state_machine.yaml`
+- `configs/arc_a/auto_embed.yaml`
+- `configs/arc_a/cow_branching.yaml`
 
 **Dependencies:** 1.1
 
@@ -800,7 +840,7 @@ when implemented.
 Story 0.1 — Extend StrataClient with JSON/Event/State/Inference namespaces
 ```
 
-Unblocks: Epic 2 (microbenchmarks), Epic 4 (inference scaffold), Epic 5 (RAGAS completion)
+Unblocks: Epic 2 (Arc A microbenchmarks), Epic 4 (Arc C inference + RAG)
 
 ### Phase 1: Core Infrastructure (5-7 commits)
 
@@ -816,7 +856,7 @@ Story 1.2 ───────────────────────�
 Story 1.7 — Experiment runner script (ties 1.1-1.6 together)
 ```
 
-### Phase 2: Paper 1 Benchmarks (4-5 commits)
+### Phase 2: Arc A — Architecture Benchmarks (5-6 commits)
 
 ```
 Stories 2.1-2.3 — Microbenchmarks (KV, JSON, Event, State, BM25)
@@ -824,27 +864,27 @@ Story 2.4 — Unified microbenchmark suite
 Story 2.5 — Cross-primitive macrobenchmarks
 Story 2.6 — Baseline runners (Redis, SQLite)
 Story 2.7 — Resource efficiency comparison
-Story 2.8 — Paper 1 configs
+Story 2.8 — Branched configuration search (killer experiment)
+Story 2.9 — Arc A configs
 ```
 
-### Phase 3: Paper 2 Benchmarks (3-4 commits)
+### Phase 3: Arc B — Retrieval Benchmarks (3-4 commits)
 
 ```
 Story 3.1 — BEIR ablation support
 Story 3.2 — Pareto analysis
 Story 3.3 — External baselines (Elasticsearch ELSER, ColBERT)
-Story 3.4 — Paper 2 configs
+Story 3.4 — Arc B configs
 ```
 
-### Phase 4: Paper 3+4 Scaffolds and All Stubs (2-3 commits)
+### Phase 4: Arc C + Arc D Scaffolds and All Stubs (2-3 commits)
 
 ```
-Story 4.1 — Inference benchmark scaffold
-Stories 5.1-5.4 — RAGAS completion + datasets + configs
-Stories 6.1-6.2 — All future paper stubs and configs
+Stories 4.1-4.5 — Inference scaffold + RAGAS completion + datasets + configs
+Stories 5.1-5.2 — Arc D stubs + remaining sub-contribution stubs and configs
 ```
 
-**Total: ~24 stories across 7 epics, approximately 15-18 commits.**
+**Total: ~26 stories across 6 epics, approximately 16-20 commits.**
 
 ---
 
@@ -860,16 +900,17 @@ Stories 6.1-6.2 — All future paper stubs and configs
   delta + significance test output
 - Existing commands (`python run.py beir --dataset nfcorpus`) still work unchanged
 
-### After Phase 2:
+### After Phase 2 (Arc A):
 - `python run.py microbench --primitive kv --record-count 10000` runs KV microbenchmarks
 - `python run.py macrobench` runs cross-primitive workflows
 - `python run.py polyglot --baseline redis sqlite` runs baseline comparisons
+- `python run.py branching` runs the branched configuration search experiment
 
-### After Phase 3:
+### After Phase 3 (Arc B):
 - `python run.py beir --dataset nfcorpus --ablation` produces full ablation table
-- `python scripts/generate_paper_tables.py --paper 2 results/` produces LaTeX + Pareto chart
+- `python scripts/generate_paper_tables.py --arc b results/` produces LaTeX + Pareto chart
 
-### After Phase 4:
+### After Phase 4 (Arc C + D):
 - All stub benchmarks importable:
   `python -c "from benchmarks import REGISTRY; print(list(REGISTRY.keys()))"`
   lists all registered suites including stubs
