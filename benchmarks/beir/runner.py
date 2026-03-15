@@ -1,4 +1,9 @@
-"""BEIR benchmark runner — evaluates Strata retrieval quality on BEIR datasets."""
+"""BEIR benchmark runner — evaluates Strata retrieval quality on BEIR datasets.
+
+Produces both v2 (BenchmarkResult) and v3 (BeirRunResult) output formats.
+v2 feeds the existing report pipeline; v3 supports multi-run ablation studies
+with per-query scores for significance testing.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ from beir.datasets.data_loader import GenericDataLoader
 from beir.retrieval.evaluation import EvaluateRetrieval
 
 from lib.schema import BenchmarkResult
+from lib.beir_result import BeirRunResult, components_from_mode
 from benchmarks.base import BaseBenchmark
 from .config import DATASETS, K_VALUES, MODES, PYSERINI_BASELINES
 from .retriever import StrataSearch
@@ -55,6 +61,32 @@ class BeirBenchmark(BaseBenchmark):
             "--model", type=str, default="miniLM",
             help="Embedding model for hybrid/hybrid-llm modes (default: miniLM)",
         )
+        # Granular pipeline flags for ablation
+        parser.add_argument(
+            "--expand", action="store_true", default=False,
+            help="Enable LLM query expansion (independent of --mode)",
+        )
+        parser.add_argument(
+            "--rerank", action="store_true", default=False,
+            help="Enable LLM reranking (independent of --mode)",
+        )
+        # v3 experiment/run tracking
+        parser.add_argument(
+            "--experiment", type=str, default="default",
+            help="Experiment name for grouping runs (default: default)",
+        )
+        parser.add_argument(
+            "--config-name", type=str, default=None,
+            help="Configuration name (default: auto-derived from mode/flags)",
+        )
+        parser.add_argument(
+            "--run-index", type=int, default=1,
+            help="Run index within experiment (default: 1)",
+        )
+        parser.add_argument(
+            "--seed", type=int, default=42,
+            help="Random seed for reproducibility (default: 42)",
+        )
 
     def validate(self, args: argparse.Namespace) -> bool:
         try:
@@ -82,17 +114,41 @@ class BeirBenchmark(BaseBenchmark):
         datasets = args.dataset if isinstance(args.dataset, list) else [args.dataset]
         modes = args.mode if isinstance(args.mode, list) else [args.mode]
 
-        for dataset in datasets:
-            for mode in modes:
-                # Build a per-run args copy
+        # One v3 result file per (mode × run).  When multiple modes are
+        # requested we emit one v3 file each.
+        for mode in modes:
+            config_name = _derive_config_name(mode, args)
+            v3 = BeirRunResult(
+                experiment=args.experiment,
+                configuration_name=config_name,
+                run_index=args.run_index,
+                seed=args.seed,
+            )
+            v3.set_components(components_from_mode(
+                mode,
+                embed_model=getattr(args, "model", "miniLM"),
+                expand=args.expand,
+                rerank=args.rerank,
+            ))
+
+            for dataset in datasets:
                 run_args = argparse.Namespace(**vars(args))
                 run_args.dataset = dataset
                 run_args.mode = mode
 
                 if dataset == "cqadupstack":
-                    all_results.extend(self._run_cqadupstack(run_args))
+                    v2_results, ds_v3 = self._run_cqadupstack(run_args)
                 else:
-                    all_results.extend(self._run_single(run_args))
+                    v2_results, ds_v3 = self._run_single(run_args)
+
+                all_results.extend(v2_results)
+
+                # Add each dataset entry to the v3 result
+                for ds_name, ds_data in ds_v3.items():
+                    v3.add_dataset(ds_name, **ds_data)
+
+            # Save v3 result
+            v3.save(args.output_dir)
 
         return all_results
 
@@ -100,19 +156,27 @@ class BeirBenchmark(BaseBenchmark):
     # Single dataset
     # ------------------------------------------------------------------
 
-    def _run_single(self, args: argparse.Namespace) -> list[BenchmarkResult]:
+    def _run_single(self, args: argparse.Namespace) -> tuple[list[BenchmarkResult], dict]:
+        """Returns (v2_results, v3_dataset_entries)."""
         print(f"Loading BEIR dataset: {args.dataset}")
         data_path = _download_dataset(args.dataset, Path(args.data_dir))
         corpus, queries, qrels = GenericDataLoader(data_folder=data_path).load(split="test")
 
         embed_model = getattr(args, "model", "miniLM")
-        model = StrataSearch(mode=args.mode, db_path=args.db_dir, embed_model=embed_model)
+        model = StrataSearch(
+            mode=args.mode,
+            expand=args.expand,
+            rerank=args.rerank,
+            db_path=args.db_dir,
+            embed_model=embed_model,
+        )
         retriever = EvaluateRetrieval(model, k_values=args.k)
         results = retriever.retrieve(corpus, queries)
 
         ndcg, map_score, recall, precision = retriever.evaluate(qrels, results, args.k)
         mrr = EvaluateRetrieval.evaluate_custom(qrels, results, args.k, metric="mrr")
 
+        # Per-query nDCG@10 for significance testing
         evaluator = pytrec_eval.RelevanceEvaluator(qrels, {"ndcg_cut.10"})
         per_query_raw = evaluator.evaluate(results)
         per_query_ndcg10 = {
@@ -132,16 +196,21 @@ class BeirBenchmark(BaseBenchmark):
             "map_at_10": map_score.get("MAP@10", 0),
             "mrr_at_10": mrr.get("MRR@10", 0),
             "precision_at_10": precision.get("P@10", 0),
-            "qps": round(qps, 1),
-            "index_time_s": round(model.index_time, 2),
-            "search_time_s": round(model.search_time, 2),
-            "avg_latency_ms": round(avg_latency_ms, 1),
         }
 
-        baselines = None
+        timing = {
+            "index_time_s": round(model.index_time, 2),
+            "search_time_s": round(model.search_time, 2),
+            "avg_latency_ms": round(avg_latency_ms, 2),
+            "qps": round(qps, 1),
+            "stage_latencies_ms": {},  # TODO: per-stage latency from CLI
+        }
+
+        # Baselines
+        baselines_v3 = None
         pyserini = PYSERINI_BASELINES.get(args.dataset)
         if pyserini:
-            baselines = {
+            baselines_v3 = {
                 "pyserini_bm25_flat": {
                     "ndcg_at_10": pyserini["bm25_flat"]["NDCG@10"],
                     "recall_at_100": pyserini["bm25_flat"]["Recall@100"],
@@ -152,20 +221,41 @@ class BeirBenchmark(BaseBenchmark):
                 },
             }
 
+        # v3 dataset entry
+        ds_v3 = {
+            args.dataset: {
+                "corpus_size": len(corpus),
+                "num_queries": num_queries,
+                "metrics": metrics,
+                "per_query_ndcg10": per_query_ndcg10,
+                "timing": timing,
+                "baselines": baselines_v3,
+            }
+        }
+
+        # v2 BenchmarkResult (backward compat)
         mode_label = args.mode if args.mode == "keyword" else f"{args.mode}/{embed_model}"
-        result = BenchmarkResult(
+        if args.expand:
+            mode_label += "+expand"
+        if args.rerank:
+            mode_label += "+rerank"
+
+        v2_metrics = {**metrics, **timing}
+        v2_result = BenchmarkResult(
             benchmark=f"beir/{args.dataset}/{mode_label}",
             category="beir",
             parameters={
                 "dataset": args.dataset,
                 "mode": args.mode,
+                "expand": args.expand,
+                "rerank": args.rerank,
                 "embed_model": embed_model if args.mode != "keyword" else None,
                 "corpus_size": len(corpus),
                 "num_queries": num_queries,
                 "k_values": args.k,
             },
-            metrics=metrics,
-            baselines=baselines,
+            metrics=v2_metrics,
+            baselines=baselines_v3,
         )
 
         _print_summary(args.dataset, args.mode, len(corpus), num_queries,
@@ -173,17 +263,18 @@ class BeirBenchmark(BaseBenchmark):
                        model.index_time, model.search_time, qps)
 
         model.cleanup()
-        return [result]
+        return [v2_result], ds_v3
 
     # ------------------------------------------------------------------
     # CQADupStack (12 subforums, macro-averaged)
     # ------------------------------------------------------------------
 
-    def _run_cqadupstack(self, args: argparse.Namespace) -> list[BenchmarkResult]:
+    def _run_cqadupstack(self, args: argparse.Namespace) -> tuple[list[BenchmarkResult], dict]:
         data_path = _download_dataset("cqadupstack", Path(args.data_dir))
         cqa_root = Path(data_path)
 
         subforum_metrics: dict[str, dict] = {}
+        subforum_per_query: dict[str, dict[str, float]] = {}
         total_corpus = 0
         total_queries = 0
         total_index_time = 0.0
@@ -200,7 +291,12 @@ class BeirBenchmark(BaseBenchmark):
             ).load(split="test")
 
             embed_model = getattr(args, "model", "miniLM")
-            model = StrataSearch(mode=args.mode, embed_model=embed_model)
+            model = StrataSearch(
+                mode=args.mode,
+                expand=args.expand,
+                rerank=args.rerank,
+                embed_model=embed_model,
+            )
             retriever = EvaluateRetrieval(model, k_values=args.k)
             results = retriever.retrieve(corpus, queries)
 
@@ -208,6 +304,12 @@ class BeirBenchmark(BaseBenchmark):
                 qrels, results, args.k,
             )
             mrr = EvaluateRetrieval.evaluate_custom(qrels, results, args.k, metric="mrr")
+
+            # Per-query scores
+            evaluator = pytrec_eval.RelevanceEvaluator(qrels, {"ndcg_cut.10"})
+            per_query_raw = evaluator.evaluate(results)
+            for qid, scores in per_query_raw.items():
+                subforum_per_query[f"{subforum}/{qid}"] = scores["ndcg_cut_10"]
 
             subforum_metrics[subforum] = {
                 "corpus_size": len(corpus),
@@ -249,16 +351,20 @@ class BeirBenchmark(BaseBenchmark):
             "recall_at_100": averaged["recall"].get("Recall@100", 0),
             "map_at_10": averaged["map"].get("MAP@10", 0),
             "mrr_at_10": averaged["mrr"].get("MRR@10", 0),
-            "qps": round(qps, 1),
-            "index_time_s": round(total_index_time, 2),
-            "search_time_s": round(total_search_time, 2),
-            "avg_latency_ms": round(avg_latency_ms, 1),
         }
 
-        baselines = None
+        timing = {
+            "index_time_s": round(total_index_time, 2),
+            "search_time_s": round(total_search_time, 2),
+            "avg_latency_ms": round(avg_latency_ms, 2),
+            "qps": round(qps, 1),
+            "stage_latencies_ms": {},
+        }
+
+        baselines_v3 = None
         pyserini = PYSERINI_BASELINES.get("cqadupstack")
         if pyserini:
-            baselines = {
+            baselines_v3 = {
                 "pyserini_bm25_flat": {
                     "ndcg_at_10": pyserini["bm25_flat"]["NDCG@10"],
                     "recall_at_100": pyserini["bm25_flat"]["Recall@100"],
@@ -269,19 +375,32 @@ class BeirBenchmark(BaseBenchmark):
                 },
             }
 
-        result = BenchmarkResult(
+        ds_v3 = {
+            "cqadupstack": {
+                "corpus_size": total_corpus,
+                "num_queries": total_queries,
+                "metrics": metrics,
+                "per_query_ndcg10": subforum_per_query,
+                "timing": timing,
+                "baselines": baselines_v3,
+            }
+        }
+
+        v2_result = BenchmarkResult(
             benchmark=f"beir/cqadupstack/{args.mode}",
             category="beir",
             parameters={
                 "dataset": "cqadupstack",
                 "mode": args.mode,
+                "expand": args.expand,
+                "rerank": args.rerank,
                 "corpus_size": total_corpus,
                 "num_queries": total_queries,
                 "k_values": args.k,
                 "subforums": len(CQADUPSTACK_SUBFORUMS),
             },
-            metrics=metrics,
-            baselines=baselines,
+            metrics={**metrics, **timing},
+            baselines=baselines_v3,
         )
 
         _print_summary("cqadupstack", args.mode, total_corpus, total_queries,
@@ -289,12 +408,26 @@ class BeirBenchmark(BaseBenchmark):
                        averaged["recall"], averaged["precision"], averaged["mrr"],
                        total_index_time, total_search_time, qps)
 
-        return [result]
+        return [v2_result], ds_v3
 
 
 # -------------------------------------------------------------------
 # Helpers
 # -------------------------------------------------------------------
+
+def _derive_config_name(mode: str, args: argparse.Namespace) -> str:
+    """Auto-derive a configuration name from mode + flags."""
+    if args.config_name:
+        return args.config_name
+    name = mode
+    if mode == "hybrid-llm":
+        return "hybrid+expand+rerank"
+    if getattr(args, "expand", False):
+        name += "+expand"
+    if getattr(args, "rerank", False):
+        name += "+rerank"
+    return name
+
 
 def _download_dataset(name: str, data_dir: Path) -> str:
     url = DATASETS[name]["url"]

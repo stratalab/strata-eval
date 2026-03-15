@@ -24,26 +24,48 @@ class StrataSearch(BaseSearch):
 
     Implements the ``BaseSearch.search()`` contract: given corpus + queries +
     top_k, returns ``{query_id: {doc_id: score}}``.
+
+    Parameters
+    ----------
+    mode : str
+        Base search mode: ``"keyword"`` or ``"hybrid"``.
+    expand : bool
+        Add ``--expand`` flag to search commands (query expansion via LLM).
+    rerank : bool
+        Add ``--rerank`` flag to search commands (LLM reranking).
+    db_path : str | None
+        Persistent database directory.  When ``None``, a temp dir is used.
+    embed_model : str
+        Embedding model name for hybrid modes.
     """
 
-    # Maps CLI mode names to search command flags.
-    _SEARCH_FLAGS = {
-        "keyword": ["--mode", "keyword"],
-        "hybrid": ["--mode", "hybrid"],
-        "hybrid-llm": ["--mode", "hybrid", "--expand", "--rerank"],
-    }
-
-    def __init__(self, mode: str = "hybrid", db_path: str | None = None,
-                 embed_model: str = "miniLM"):
+    def __init__(
+        self,
+        mode: str = "hybrid",
+        *,
+        expand: bool = False,
+        rerank: bool = False,
+        db_path: str | None = None,
+        embed_model: str = "miniLM",
+    ):
+        # Backward compat: "hybrid-llm" mode implies expand + rerank.
         if mode == "hybrid-llm":
+            mode = "hybrid"
+            expand = True
+            rerank = True
+
+        if expand or rerank:
             endpoint = os.environ.get("STRATA_MODEL_ENDPOINT")
             model = os.environ.get("STRATA_MODEL_NAME")
             if not endpoint or not model:
                 raise RuntimeError(
-                    "hybrid-llm mode requires STRATA_MODEL_ENDPOINT and "
+                    "--expand / --rerank require STRATA_MODEL_ENDPOINT and "
                     "STRATA_MODEL_NAME environment variables"
                 )
+
         self.mode = mode
+        self.expand = expand
+        self.rerank = rerank
         self.db_path = db_path
         self.embed_model = embed_model
         self._db_dir: str | None = None
@@ -51,6 +73,10 @@ class StrataSearch(BaseSearch):
         self._setup_done = False
         self.index_time: float = 0.0
         self.search_time: float = 0.0
+
+    @property
+    def use_embed(self) -> bool:
+        return self.mode != "keyword"
 
     def _ensure_db_dir(self) -> str:
         """Create or return the database directory."""
@@ -73,18 +99,27 @@ class StrataSearch(BaseSearch):
         if self._setup_done:
             return
         db_dir = self._ensure_db_dir()
-        use_embed = self.mode != "keyword"
-        if use_embed or self.mode == "hybrid-llm":
-            with StrataClient(db_path=db_dir, auto_embed=use_embed) as client:
-                if use_embed:
+        needs_llm = self.expand or self.rerank
+        if self.use_embed or needs_llm:
+            with StrataClient(db_path=db_dir, auto_embed=self.use_embed) as client:
+                if self.use_embed:
                     client.setup()
-                if self.mode == "hybrid-llm":
+                if needs_llm:
                     client.configure_model(
                         endpoint=os.environ["STRATA_MODEL_ENDPOINT"],
                         model=os.environ["STRATA_MODEL_NAME"],
                         api_key=os.environ.get("STRATA_MODEL_API_KEY"),
                     )
         self._setup_done = True
+
+    def _build_search_flags(self) -> list[str]:
+        """Build CLI flags for the search command."""
+        flags = ["--mode", self.mode]
+        if self.expand:
+            flags.append("--expand")
+        if self.rerank:
+            flags.append("--rerank")
+        return flags
 
     # ------------------------------------------------------------------
     # BaseSearch interface
@@ -100,12 +135,10 @@ class StrataSearch(BaseSearch):
     ) -> dict[str, dict[str, float]]:
         self._ensure_setup()
         db_dir = self._ensure_db_dir()
-        use_embed = self.mode != "keyword"
 
         # -- Index corpus via CLI batch ------------------------------------
-        # Check if DB already has data (via a short-lived client)
         needs_index = True
-        with StrataClient(db_path=db_dir, auto_embed=use_embed) as client:
+        with StrataClient(db_path=db_dir, auto_embed=self.use_embed) as client:
             existing_keys = client.kv.list()
             if len(existing_keys) >= len(corpus):
                 print(f"Database already contains {len(existing_keys)} docs, skipping indexing")
@@ -125,7 +158,7 @@ class StrataSearch(BaseSearch):
             self.index_time, _ = batch_execute(
                 index_cmds,
                 db_path=db_dir,
-                auto_embed=use_embed,
+                auto_embed=self.use_embed,
                 parse_responses=False,
             )
             print(f"  Index time: {self.index_time:.1f}s")
@@ -133,13 +166,13 @@ class StrataSearch(BaseSearch):
             self.index_time = 0.0
 
         # -- Search via CLI batch ------------------------------------------
-        mode_flags = self._SEARCH_FLAGS[self.mode]
+        search_flags = self._build_search_flags()
         search_cmds: list[str] = []
         query_ids: list[str] = []
 
         for qid, query_text in queries.items():
             parts = ["search", shlex.quote(query_text), str(top_k)]
-            parts.extend(mode_flags)
+            parts.extend(search_flags)
             parts.extend(["--primitives", "kv"])
             search_cmds.append(" ".join(parts))
             query_ids.append(qid)
@@ -148,7 +181,7 @@ class StrataSearch(BaseSearch):
         self.search_time, responses = batch_execute(
             search_cmds,
             db_path=db_dir,
-            auto_embed=use_embed,
+            auto_embed=self.use_embed,
         )
 
         # -- Parse results -------------------------------------------------
