@@ -150,7 +150,7 @@ class StrataSearch(BaseSearch):
             for doc_id, doc in tqdm(corpus.items(), desc="Preparing"):
                 text = f"{doc.get('title', '')} {doc['text']}".strip()
                 index_cmds.append(
-                    f"kv put {shlex.quote(doc_id)} {shlex.quote(text)}"
+                    f"kv put -- {shlex.quote(doc_id)} {shlex.quote(text)}"
                 )
             index_cmds.append("flush")
 

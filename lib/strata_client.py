@@ -513,12 +513,14 @@ def batch_execute(
         args.append("--auto-embed")
 
     # Write commands to a temp file to avoid pipe buffer limits on
-    # large workloads (100K+ commands).
+    # large workloads (100K+ commands).  Collapse embedded newlines to
+    # spaces — the pipe protocol is line-delimited (one command per line).
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".txt", delete=False,
     ) as f:
         for cmd in commands:
-            f.write(cmd + "\n")
+            safe = cmd.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+            f.write(safe + "\n")
         cmd_path = f.name
 
     try:
