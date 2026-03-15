@@ -274,7 +274,7 @@ class BeirBenchmark(BaseBenchmark):
         cqa_root = Path(data_path)
 
         subforum_metrics: dict[str, dict] = {}
-        subforum_per_query: dict[str, dict[str, float]] = {}
+        subforum_per_query: dict[str, float] = {}
         total_corpus = 0
         total_queries = 0
         total_index_time = 0.0
@@ -351,6 +351,7 @@ class BeirBenchmark(BaseBenchmark):
             "recall_at_100": averaged["recall"].get("Recall@100", 0),
             "map_at_10": averaged["map"].get("MAP@10", 0),
             "mrr_at_10": averaged["mrr"].get("MRR@10", 0),
+            "precision_at_10": averaged["precision"].get("P@10", 0),
         }
 
         timing = {

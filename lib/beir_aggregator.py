@@ -85,7 +85,11 @@ def aggregate_runs(runs: list[dict]) -> dict:
         raise ValueError("No runs to aggregate")
 
     first = runs[0]
-    dataset_names = sorted(first["datasets"].keys())
+    # Union of all datasets across all runs (not just the first).
+    all_ds: set[str] = set()
+    for r in runs:
+        all_ds.update(r.get("datasets", {}).keys())
+    dataset_names = sorted(all_ds)
 
     aggregated: dict[str, dict] = {}
     for ds_name in dataset_names:
@@ -168,8 +172,9 @@ def compare_configurations(
         effect_d = None
         test_name = None
 
-        # Try per-query paired t-test if raw runs available
-        if runs_a and runs_b and len(runs_a) == len(runs_b):
+        # Per-query paired t-test (averages per-query scores across runs,
+        # then pairs by query ID — run counts need not match).
+        if runs_a and runs_b:
             scores_a = _collect_per_query(runs_a, ds_name)
             scores_b = _collect_per_query(runs_b, ds_name)
             common_qids = sorted(set(scores_a.keys()) & set(scores_b.keys()))
@@ -250,7 +255,7 @@ def generate_main_table(
     aggregated_configs: list[dict],
     *,
     fmt: str = "markdown",
-    baselines: dict | None = None,
+    include_baselines: bool = False,
 ) -> str:
     """Generate the main results table (configs × datasets, nDCG@10)."""
     if not aggregated_configs:
@@ -266,8 +271,8 @@ def generate_main_table(
 
     rows: list[tuple[str, dict[str, float]]] = []
 
-    # Add baseline rows if provided
-    if baselines:
+    # Add Pyserini baseline rows
+    if include_baselines:
         from benchmarks.beir.config import PYSERINI_BASELINES
         for bl_name, bl_key in [("Pyserini BM25 flat", "bm25_flat"), ("Pyserini BM25 mf", "bm25_mf")]:
             ds_scores = {}
@@ -309,7 +314,8 @@ def _table_markdown(datasets: list[str], rows: list[tuple[str, dict[str, float]]
 
 
 def _table_latex(datasets: list[str], rows: list[tuple[str, dict[str, float]]]) -> str:
-    short = {d: d.replace("-", "\\mbox{-}").replace("_", "\\_")[:12] for d in datasets}
+    # Truncate BEFORE LaTeX escaping to avoid cutting inside escape sequences.
+    short = {d: d[:12].replace("-", "\\mbox{-}").replace("_", "\\_") for d in datasets}
     col_spec = "l" + "c" * len(datasets) + "c"
 
     lines = [
@@ -410,7 +416,7 @@ def save_tables(
     paths = []
 
     for fmt, ext in [("markdown", "md"), ("latex", "tex")]:
-        main = generate_main_table(aggregated_configs, fmt=fmt, baselines=True)
+        main = generate_main_table(aggregated_configs, fmt=fmt, include_baselines=True)
         if main:
             p = table_dir / f"{experiment}-main-results.{ext}"
             p.write_text(main)

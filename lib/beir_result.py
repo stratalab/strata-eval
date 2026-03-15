@@ -112,6 +112,8 @@ class BeirRunResult:
         self._timestamp = now.isoformat()
         self._timestamp_slug = now.strftime("%Y-%m-%dT%H-%M-%S")
         self._git_commit = git_short_commit() or "unknown"
+        self._git_branch = git_branch()
+        self._git_dirty = git_is_dirty()
 
         self._hardware = capture_hardware()
         self._strata_version = get_sdk_version()
@@ -169,8 +171,8 @@ class BeirRunResult:
             "seed": self.seed,
             "timestamp": self._timestamp,
             "git_commit": self._git_commit,
-            "git_branch": git_branch(),
-            "git_dirty": git_is_dirty(),
+            "git_branch": self._git_branch,
+            "git_dirty": self._git_dirty,
             "strata_version": self._strata_version,
             "hardware": {
                 "cpu": hw.cpu,
