@@ -467,6 +467,103 @@ def _parse_json_stream(output: str) -> list:
     return results
 
 
+def write_command_file(path: str | os.PathLike) -> "_CommandFileWriter":
+    """Return a context-manager that streams commands to a temp file.
+
+    Usage::
+
+        with write_command_file(dir) as w:
+            for doc_id, text in corpus:
+                w.write(f"kv put -- {shlex.quote(doc_id)} {shlex.quote(text)}")
+            w.write("flush")
+        elapsed, responses = batch_execute_file(w.path, db_path=db_path)
+    """
+    return _CommandFileWriter(path)
+
+
+class _CommandFileWriter:
+    """Streams commands to a temp file one at a time — never holds them in memory."""
+
+    def __init__(self, directory: str | os.PathLike) -> None:
+        self._dir = str(directory)
+        self.path: str | None = None
+        self.count: int = 0
+        self._f = None
+
+    def __enter__(self) -> "_CommandFileWriter":
+        os.makedirs(self._dir, exist_ok=True)
+        fd, self.path = tempfile.mkstemp(dir=self._dir, suffix=".cmds")
+        self._f = os.fdopen(fd, "w")
+        return self
+
+    def write(self, cmd: str) -> None:
+        safe = cmd.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+        self._f.write(safe + "\n")
+        self.count += 1
+
+    def __exit__(self, *exc) -> None:
+        if self._f is not None:
+            self._f.close()
+            self._f = None
+
+
+def batch_execute_file(
+    cmd_path: str,
+    *,
+    db_path: str,
+    binary: str | None = None,
+    auto_embed: bool = False,
+    cache: bool = False,
+    parse_responses: bool = True,
+    cleanup: bool = True,
+) -> tuple[float, list]:
+    """Run a pre-written command file through the ``strata`` CLI.
+
+    Like :func:`batch_execute` but reads from *cmd_path* directly,
+    avoiding the need to hold all commands in Python memory.
+
+    Parameters
+    ----------
+    cmd_path:
+        Path to a text file with one command per line.
+    cleanup:
+        Delete *cmd_path* after execution (default True).
+    """
+    resolved_binary = StrataClient._resolve_binary(binary)
+    args = [resolved_binary, "--json", "--db", db_path]
+    if cache:
+        args.append("--cache")
+    if auto_embed:
+        args.append("--auto-embed")
+
+    try:
+        with open(cmd_path) as stdin_file:
+            stdout_target = subprocess.PIPE if parse_responses else subprocess.DEVNULL
+            t0 = time.perf_counter()
+            proc = subprocess.run(
+                args,
+                stdin=stdin_file,
+                stdout=stdout_target,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            elapsed = time.perf_counter() - t0
+    finally:
+        if cleanup:
+            try:
+                os.unlink(cmd_path)
+            except OSError:
+                pass
+
+    if proc.returncode != 0 and not (parse_responses and proc.stdout):
+        raise StrataError(
+            f"Batch execute failed (rc={proc.returncode}): {proc.stderr.strip()}"
+        )
+
+    responses = _parse_json_stream(proc.stdout) if parse_responses else []
+    return elapsed, responses
+
+
 def batch_execute(
     commands: list[str],
     *,
@@ -482,6 +579,10 @@ def batch_execute(
     stdin.  Only the strata process execution time is measured — there is
     **no Python overhead per operation**.  Use this for benchmark timing
     loops instead of the interactive :class:`StrataClient` pipe.
+
+    For very large command lists (millions of entries), prefer
+    :func:`write_command_file` + :func:`batch_execute_file` to avoid
+    holding all commands in Python memory simultaneously.
 
     Parameters
     ----------
@@ -505,43 +606,23 @@ def batch_execute(
         Wall-clock time of the CLI process and the list of parsed/unwrapped
         response values (one per command).
     """
-    resolved_binary = StrataClient._resolve_binary(binary)
-    args = [resolved_binary, "--json", "--db", db_path]
-    if cache:
-        args.append("--cache")
-    if auto_embed:
-        args.append("--auto-embed")
-
-    # Write commands to a temp file to avoid pipe buffer limits on
-    # large workloads (100K+ commands).  Collapse embedded newlines to
-    # spaces — the pipe protocol is line-delimited (one command per line).
-    with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".txt", delete=False,
-    ) as f:
-        for cmd in commands:
-            safe = cmd.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
-            f.write(safe + "\n")
-        cmd_path = f.name
-
+    # Write commands to a temp file, then delegate to batch_execute_file.
+    fd, cmd_path = tempfile.mkstemp(suffix=".cmds")
     try:
-        with open(cmd_path) as stdin_file:
-            stdout_target = subprocess.PIPE if parse_responses else subprocess.DEVNULL
-            t0 = time.perf_counter()
-            proc = subprocess.run(
-                args,
-                stdin=stdin_file,
-                stdout=stdout_target,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            elapsed = time.perf_counter() - t0
-    finally:
+        with os.fdopen(fd, "w") as f:
+            for cmd in commands:
+                safe = cmd.replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
+                f.write(safe + "\n")
+    except Exception:
         os.unlink(cmd_path)
+        raise
 
-    if proc.returncode != 0 and not (parse_responses and proc.stdout):
-        raise StrataError(
-            f"Batch execute failed (rc={proc.returncode}): {proc.stderr.strip()}"
-        )
-
-    responses = _parse_json_stream(proc.stdout) if parse_responses else []
-    return elapsed, responses
+    return batch_execute_file(
+        cmd_path,
+        db_path=db_path,
+        binary=binary,
+        auto_embed=auto_embed,
+        cache=cache,
+        parse_responses=parse_responses,
+        cleanup=True,
+    )

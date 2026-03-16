@@ -14,7 +14,7 @@ import shlex
 import tempfile
 
 from beir.retrieval.search import BaseSearch
-from lib.strata_client import StrataClient, batch_execute
+from lib.strata_client import StrataClient, batch_execute, batch_execute_file, write_command_file
 from tqdm import tqdm
 
 
@@ -145,18 +145,18 @@ class StrataSearch(BaseSearch):
                 needs_index = False
 
         if needs_index:
-            print("Generating index commands...")
-            index_cmds: list[str] = []
-            for doc_id, doc in tqdm(corpus.items(), desc="Preparing"):
-                text = f"{doc.get('title', '')} {doc['text']}".strip()
-                index_cmds.append(
-                    f"kv put -- {shlex.quote(doc_id)} {shlex.quote(text)}"
-                )
-            index_cmds.append("flush")
+            # Stream commands directly to a temp file — avoids holding
+            # millions of command strings in Python memory for large corpora.
+            print(f"Streaming {len(corpus)} index commands to disk...")
+            with write_command_file(db_dir) as w:
+                for doc_id, doc in tqdm(corpus.items(), desc="Preparing"):
+                    text = f"{doc.get('title', '')} {doc['text']}".strip()
+                    w.write(f"kv put -- {shlex.quote(doc_id)} {shlex.quote(text)}")
+                w.write("flush")
 
             print(f"Indexing {len(corpus)} documents via CLI...")
-            self.index_time, _ = batch_execute(
-                index_cmds,
+            self.index_time, _ = batch_execute_file(
+                w.path,
                 db_path=db_dir,
                 auto_embed=self.use_embed,
                 parse_responses=False,
